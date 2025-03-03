@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Hexagon Puzzle Game</title>
+  <style>
+    /* Your existing styles remain unchanged */
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="canvas"></canvas>
+    <div id="ui">
+      <h3>Hexagon Puzzle</h3>
+      <div class="slider-container">
+        <label for="difficultySlider">Difficulty:</label>
+        <input type="range" id="difficultySlider" min="1" max="10" value="3" />
+        <div id="difficultyValue" class="value-display">3</div>
+      </div>
+      <button id="newGameBtn">New Game</button>
+      <button id="resetBtn">Reset Current</button>
+      <button id="saveBtn">Save Puzzle</button>
+      <button id="loadBtn">Load Saved</button>
+      <button id="helpBtn">Help / Controls</button>
+    </div>
+    <div id="message"></div>
+    <div id="helpModal">
+      <span class="close-btn">×</span>
+      <h3>How to Play</h3>
+      <p><strong>Objective:</strong> Fill the hexagonal board with all puzzle pieces.</p>
+      <p><strong>Controls:</strong></p>
+      <ul>
+        <li><strong>Drag:</strong> Click and drag to move pieces</li>
+        <li><strong>Rotate:</strong> R key or right-click while hovering over a piece</li>
+        <li><strong>Flip:</strong> F key or middle-click while hovering over a piece</li>
+        <li><strong>Pan:</strong> Arrow keys (moves the camera)</li>
+      </ul>
+      <p><strong>Difficulty:</strong> Higher difficulty means more empty spaces (fewer pieces pre-placed), making the puzzle harder.</p>
+    </div>
+  </div>
+
+  <!-- Three.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- Placeholder for DLX library (replace with actual source) -->
+  <!--
+  <script type="module" src="https://unpkg.com/dlxlib@2.0.0-alpha.1/lib/index.js"></script>
+  -->
+  <script src="dlx.js"></script>
+  <script>
+    // ================== CONSTANTS ==================
+    const BOARD_SIZE = 4;
+    const HEX_SIZE = 1.0;
+    const PIECE_HEIGHT = 0.2;
+    const BOARD_COLOR = 0xf0e6d2;
+    const HIGHLIGHT_COLOR = 0x00ff00;
+    const COLORS = {
+      RED: 0xe74c3c, BLUE: 0x3498db, GREEN: 0x2ecc71, YELLOW: 0xf1c40f,
+      ORANGE: 0xe67e22, PURPLE: 0x9b59b6, TEAL: 0x1abc9c, PINK: 0xff9ff3,
+      NAVY: 0x34495e, LIME: 0xc8ff00, BROWN: 0x795548, MAGENTA: 0xff00ff,
+      CYAN: 0x00FFFF, GOLD: 0xFFD700, SLATE: 0x708090
+    };
+
+    // ================== GLOBALS ==================
+    let scene, camera, renderer, raycaster, mouse;
+    let board, boardCells = [];
+    let boardHighlights = {};
+    let pieces = [], selectedPiece = null, hoveredPiece = null;
+    let gridPositions = [];
+    let savedPuzzles = {};
+    let currentDifficulty = 3;
+    let piecesInPlace = 0, totalPieces = 0;
+    let dragOffset = { x: 0, y: 0, z: 0 };
+    let validPlacement = false;
+
+    // ================== INIT ==================
+    function init() {
+      // Your existing init code remains unchanged up to createPieces()
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xf0f0f0);
+
+      const aspect = window.innerWidth / window.innerHeight;
+      const size = 18;
+      camera = new THREE.OrthographicCamera(-size * aspect, size * aspect, size, -size, 0.1, 200);
+      camera.position.set(0, 10, 0);
+      camera.lookAt(0, 0, 0);
+
+      renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+      scene.add(ambientLight);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+      dirLight.position.set(5, 10, 5);
+      dirLight.castShadow = true;
+      scene.add(dirLight);
+
+      raycaster = new THREE.Raycaster();
+      mouse = new THREE.Vector2();
+
+      createBoard();
+      createPieces();
+      totalPieces = pieces.length;
+
+      // Event listeners remain unchanged
+      window.addEventListener('resize', onWindowResize);
+      renderer.domElement.addEventListener('mousedown', onMouseDown);
+      window.addEventListener('mouseup', onMouseUp);
+      renderer.domElement.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('contextmenu', e => e.preventDefault());
+      window.addEventListener('keydown', onKeyDown);
+
+      document.getElementById('newGameBtn').addEventListener('click', startNewGame);
+      document.getElementById('resetBtn').addEventListener('click', resetCurrentGame);
+      document.getElementById('saveBtn').addEventListener('click', savePuzzle);
+      document.getElementById('loadBtn').addEventListener('click', loadSavedPuzzle);
+      document.getElementById('helpBtn').addEventListener('click', showHelp);
+      document.getElementById('difficultySlider').addEventListener('input', updateDifficulty);
+      document.querySelector('.close-btn').addEventListener('click', hideHelp);
+
+      loadSavedPuzzlesFromStorage();
+      animate();
+      startNewGame();
+    }
+
+    // ================== BOARD CREATION ==================
+    function axialToCube(q, r) {
+      const x = q;
+      const z = r;
+      const y = -x - z;
+      return { x, y, z };
+    }
+
+    function cubeToWorld(cx, cy, cz) {
+      const x = HEX_SIZE * (1.5 * cx);
+      const z = HEX_SIZE * (Math.sqrt(3) / 2 * cx + Math.sqrt(3) * cz);
+      return { x, y: 0, z };
+    }
+
+    function createBoard() {
+      // Your existing createBoard code remains unchanged
+      board = new THREE.Group();
+      scene.add(board);
+
+      for (let q = -BOARD_SIZE; q <= BOARD_SIZE; q++) {
+        for (let r = -BOARD_SIZE; r <= BOARD_SIZE; r++) {
+          const s = -q - r;
+          if (Math.max(Math.abs(q), Math.abs(r), Math.abs(s)) <= BOARD_SIZE) {
+            const wpos = cubeToWorld(q, 0, r);
+            const geo = new THREE.CylinderGeometry(HEX_SIZE * 0.98, HEX_SIZE * 0.98, 0.1, 6);
+            const mat = new THREE.MeshStandardMaterial({ color: BOARD_COLOR, roughness: 0.7, metalness: 0.1 });
+            const cellMesh = new THREE.Mesh(geo, mat);
+            cellMesh.rotation.y = Math.PI / 6;
+            cellMesh.position.set(wpos.x, -0.05, wpos.z);
+            cellMesh.receiveShadow = true;
+            board.add(cellMesh);
+
+            gridPositions.push({ q, r, s, x: wpos.x, z: wpos.z, occupied: false });
+            boardCells.push({ q, r, s, occupied: false, pieceId: null, x: wpos.x, z: wpos.z });
+          }
+        }
+      }
+      createCellHighlights();
+    }
+
+    function createCellHighlights() {
+      // Your existing createCellHighlights code remains unchanged
+      for (const cell of boardCells) {
+        const key = `${cell.q}_${cell.r}_${cell.s}`;
+        const geom = new THREE.CylinderGeometry(HEX_SIZE * 1.05, HEX_SIZE * 1.05, 0.05, 6);
+        const mat = new THREE.MeshBasicMaterial({ color: HIGHLIGHT_COLOR, transparent: true, opacity: 0.4 });
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.rotation.y = Math.PI / 6;
+        mesh.position.set(cell.x, 0, cell.z);
+        mesh.visible = false;
+        board.add(mesh);
+        boardHighlights[key] = mesh;
+      }
+    }
+
+    function highlightCells(cells) {
+      unhighlightAllCells();
+      for (const c of cells) {
+        const key = `${c.q}_${c.r}_${c.s}`;
+        if (boardHighlights[key]) boardHighlights[key].visible = true;
+      }
+    }
+
+    function unhighlightAllCells() {
+      for (const k in boardHighlights) boardHighlights[k].visible = false;
+    }
+
+    // ================== PIECES CREATION ==================
+    function createPieces() {
+      // Your existing pieceDefs remain unchanged
+      const pieceDefs = [
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: -1, r: 0 }, { q: 0, r: 1 }], color: COLORS.RED },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: -1 }], color: COLORS.YELLOW },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 3, r: 0 }], color: COLORS.NAVY },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: 1 }, { q: 1, r: -1 }], color: COLORS.BLUE },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 2, r: 1 }], color: COLORS.ORANGE },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 2, r: 1 }, { q: 2, r: 2 }], color: COLORS.PURPLE },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }], color: COLORS.TEAL },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 1, r: -1 }, { q: 2, r: -1 }, { q: 1, r: 1 }], color: COLORS.PINK },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: -1 }, { q: 2, r: -1 }], color: COLORS.GREEN },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 0, r: -1 }], color: COLORS.SLATE },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 0, r: -1 }, { q: 1, r: -2 }], color: COLORS.BROWN },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 2, r: 0 }, { q: 0, r: 1 }, { q: 2, r: -1 }], color: COLORS.MAGENTA },
+        { coords: [{ q: 0, r: 0 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: 1, r: -1 }, { q: 1, r: -2 }], color: COLORS.CYAN },
+        { coords: [{ q: 0, r: 2 }, { q: 1, r: 0 }, { q: 0, r: 1 }, { q: -1, r: 1 }], color: COLORS.GOLD }
+      ];
+
+      for (let i = 0; i < pieceDefs.length; i++) {
+        const def = pieceDefs[i];
+        const pieceGroup = new THREE.Group();
+        const originalCells = def.coords.map(c => ({ q: c.q, r: c.r, s: -c.q - c.r }));
+
+        pieceGroup.userData = {
+          pieceId: i, inPlace: false, placedAt: null, rotationState: 0, flipped: false,
+          originalCells: originalCells, cells: JSON.parse(JSON.stringify(originalCells)),
+          color: def.color
+        };
+
+        let centerX = 0, centerZ = 0;
+        for (const c of def.coords) {
+          const wp = cubeToWorld(c.q, 0, c.r);
+          centerX += wp.x;
+          centerZ += wp.z;
+        }
+        centerX /= def.coords.length;
+        centerZ /= def.coords.length;
+
+        for (const c of def.coords) {
+          const wp = cubeToWorld(c.q, 0, c.r);
+          const geo = new THREE.CylinderGeometry(HEX_SIZE * 0.95, HEX_SIZE * 0.95, PIECE_HEIGHT, 6);
+          const mat = new THREE.MeshStandardMaterial({ color: def.color, roughness: 0.5, metalness: 0.2 });
+          const hex = new THREE.Mesh(geo, mat);
+          hex.position.set(wp.x - centerX, PIECE_HEIGHT / 2, wp.z - centerZ);
+          hex.rotation.y = Math.PI / 6;
+          hex.castShadow = true;
+          pieceGroup.add(hex);
+        }
+
+        const angle = (2 * Math.PI * i) / pieceDefs.length;
+        const radius = BOARD_SIZE * 3.0;
+        pieceGroup.position.set(radius * Math.cos(angle), 0, radius * Math.sin(angle));
+        pieceGroup.userData.originalPosition = {
+          x: pieceGroup.position.x, y: pieceGroup.position.y, z: pieceGroup.position.z
+        };
+
+        pieces.push(pieceGroup);
+        scene.add(pieceGroup);
+      }
+    }
+
+    // ================== TRANSFORMATIONS ==================
+    function getTransformedCoordinates(piece, rot = piece.userData.rotationState, flip = piece.userData.flipped) {
+      let cells = JSON.parse(JSON.stringify(piece.userData.originalCells));
+      if (flip) {
+        cells = cells.map(c => ({ q: -c.q, r: c.r, s: -c.s }));
+      }
+      for (let i = 0; i < rot; i++) {
+        cells = cells.map(c => ({ q: -c.s, r: -c.q, s: -c.r }));
+      }
+      return cells;
+    }
+
+    // ================== MOUSE/DRAG ==================
+    // Your existing onMouseDown, onMouseUp, onMouseMove remain unchanged
+    function onMouseDown(e) {
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+      if (e.button === 2) {
+        e.preventDefault();
+        rotateHoveredPiece();
+        return;
+      }
+      if (e.button === 1) {
+        e.preventDefault();
+        flipHoveredPiece();
+        return;
+      }
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(scene.children, true);
+      if (intersects.length) {
+        const clickedObj = intersects[0].object;
+        let clickedPiece = null;
+
+        for (const p of pieces) {
+          if (p.getObjectById(clickedObj.id) || p === clickedObj) {
+            clickedPiece = p;
+            break;
+          }
+        }
+
+        if (clickedPiece) {
+          selectedPiece = clickedPiece;
+          if (selectedPiece.userData.inPlace) removePieceFromBoard(selectedPiece);
+          const ip = intersects[0].point;
+          dragOffset.x = selectedPiece.position.x - ip.x;
+          dragOffset.z = selectedPiece.position.z - ip.z;
+          selectedPiece.position.y = 0.5;
+          unhighlightAllCells();
+        }
+      }
+    }
+
+    function onMouseUp() {
+      if (!selectedPiece) return;
+      if (validPlacement) {
+        const result = getPotentialCells(selectedPiece);
+        if (result.canPlace) snapPiece(selectedPiece, result.cells);
+        else resetPiecePosition(selectedPiece);
+      } else {
+        resetPiecePosition(selectedPiece);
+      }
+      selectedPiece.position.y = 0;
+      selectedPiece = null;
+      validPlacement = false;
+      unhighlightAllCells();
+    }
+
+    function onMouseMove(e) {
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+      if (!selectedPiece) {
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(scene.children, true);
+        hoveredPiece = null;
+        if (intersects.length) {
+          const hitObj = intersects[0].object;
+          for (const p of pieces) {
+            if (p.getObjectById(hitObj.id) || p === hitObj) {
+              hoveredPiece = p;
+              break;
+            }
+          }
+        }
+        document.body.style.cursor = hoveredPiece ? 'pointer' : 'default';
+      }
+
+      if (selectedPiece) {
+        raycaster.setFromCamera(mouse, camera);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        const intersectPt = new THREE.Vector3();
+        raycaster.ray.intersectPlane(plane, intersectPt);
+
+        selectedPiece.position.x = intersectPt.x + dragOffset.x;
+        selectedPiece.position.z = intersectPt.z + dragOffset.z;
+
+        const result = getPotentialCells(selectedPiece);
+        validPlacement = result.canPlace;
+        if (validPlacement && result.cells.length > 0) highlightCells(result.cells);
+        else unhighlightAllCells();
+      }
+    }
+
+    // ================== PLACEMENT & SNAP ==================
+    function getPotentialCells(piece) {
+      // Your existing getPotentialCells remains unchanged
+      const hexWorldPositions = piece.children.map(child => {
+        const pos = new THREE.Vector3();
+        child.getWorldPosition(pos);
+        return pos;
+      });
+
+      const targetCells = hexWorldPositions.map(pos => {
+        let closestDist = Infinity;
+        let closestCell = null;
+        for (const gridCell of gridPositions) {
+          const dx = pos.x - gridCell.x;
+          const dz = pos.z - gridCell.z;
+          const dist = dx * dx + dz * dz;
+          if (dist < closestDist) {
+            closestDist = dist;
+            closestCell = gridCell;
+          }
+        }
+        return closestCell;
+      });
+
+      const uniqueCells = new Set(targetCells.map(c => `${c.q}_${c.r}_${c.s}`));
+      if (uniqueCells.size < targetCells.length) return { canPlace: false, cells: [], targetCell: null };
+
+      for (const cell of targetCells) {
+        const boardCell = boardCells.find(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s);
+        if (!boardCell || (boardCell.occupied && boardCell.pieceId !== piece.userData.pieceId)) {
+          return { canPlace: false, cells: [], targetCell: null };
+        }
+      }
+
+      return { canPlace: true, cells: targetCells, targetCell: targetCells[0] };
+    }
+
+    function snapPiece(piece, targetCells) {
+      // Your existing snapPiece remains unchanged
+      const firstHexWorldPos = new THREE.Vector3();
+      piece.children[0].getWorldPosition(firstHexWorldPos);
+
+      const targetPos = targetCells[0];
+      const offset = new THREE.Vector3(targetPos.x - firstHexWorldPos.x, 0, targetPos.z - firstHexWorldPos.z);
+
+      piece.position.add(offset);
+      piece.userData.inPlace = true;
+      piece.userData.placedAt = { q: targetCells[0].q, r: targetCells[0].r, s: targetCells[0].s };
+
+      for (const cell of targetCells) {
+        const boardCell = boardCells.find(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s);
+        if (boardCell) {
+          boardCell.occupied = true;
+          boardCell.pieceId = piece.userData.pieceId;
+        }
+      }
+
+      piecesInPlace++;
+
+      const originalScale = piece.scale.clone();
+      const scaleUp = 1.15;
+      let direction = 1;
+      let startTime = performance.now();
+
+      function animateScale(t) {
+        const dt = t - startTime;
+        const frac = Math.min(dt / 150, 1);
+        const s = 1 + (scaleUp - 1) * frac * direction;
+        piece.scale.set(originalScale.x * s, originalScale.y * s, originalScale.z * s);
+
+        if (dt < 150) requestAnimationFrame(animateScale);
+        else if (direction > 0) {
+          direction = -1;
+          startTime = performance.now();
+          requestAnimationFrame(animateScale);
+        } else {
+          piece.scale.copy(originalScale);
+          showMessage("Piece placed!", 800);
+          checkForCompletion();
+        }
+      }
+
+      requestAnimationFrame(animateScale);
+    }
+
+    // ================== RESET & REMOVE ==================
+    function resetPiecePosition(piece) {
+      const orig = piece.userData.originalPosition;
+      piece.position.set(orig.x, orig.y, orig.z);
+      piece.userData.inPlace = false;
+    }
+
+    function removePieceFromBoard(piece) {
+      if (!piece.userData.inPlace) return;
+      for (const bc of boardCells) {
+        if (bc.pieceId === piece.userData.pieceId) {
+          bc.occupied = false;
+          bc.pieceId = null;
+        }
+      }
+      piece.userData.inPlace = false;
+      piece.userData.placedAt = null;
+      piecesInPlace--;
+    }
+
+    // ================== ROTATE / FLIP ==================
+    function rotateHoveredPiece() { if (hoveredPiece) rotatePiece(hoveredPiece); }
+    function flipHoveredPiece() { if (hoveredPiece) flipPiece(hoveredPiece); }
+
+    function rotatePiece(piece) {
+      // Your existing rotatePiece remains unchanged
+      if (piece.userData.inPlace) removePieceFromBoard(piece);
+      piece.userData.rotationState = (piece.userData.rotationState + 1) % 6;
+      piece.rotation.y += Math.PI / 3;
+      if (selectedPiece === piece) {
+        const result = getPotentialCells(piece);
+        validPlacement = result.canPlace;
+        if (validPlacement) highlightCells(result.cells);
+        else unhighlightAllCells();
+      }
+    }
+
+    function flipPiece(piece) {
+      // Your existing flipPiece remains unchanged
+      if (piece.userData.inPlace) removePieceFromBoard(piece);
+      piece.userData.flipped = !piece.userData.flipped;
+      piece.scale.z *= -1;
+      if (selectedPiece === piece) {
+        const result = getPotentialCells(piece);
+        validPlacement = result.canPlace;
+        if (validPlacement) highlightCells(result.cells);
+        else unhighlightAllCells();
+      }
+    }
+
+    // ================== COMPLETION ==================
+    function checkForCompletion() {
+      if (piecesInPlace === totalPieces) showMessage("Puzzle Completed! Congratulations!", 4000);
+    }
+
+    // ================== KEYBOARD ==================
+    function onKeyDown(e) {
+      // Your existing onKeyDown remains unchanged
+      if (e.key === 'r' || e.key === 'R') {
+        if (selectedPiece) rotatePiece(selectedPiece);
+        else if (hoveredPiece) rotatePiece(hoveredPiece);
+      } else if (e.key === 'f' || e.key === 'F') {
+        if (selectedPiece) flipPiece(selectedPiece);
+        else if (hoveredPiece) flipPiece(hoveredPiece);
+      }
+
+      const moveSpeed = 1;
+      if (e.key === 'ArrowUp') camera.position.z -= moveSpeed;
+      else if (e.key === 'ArrowDown') camera.position.z += moveSpeed;
+      else if (e.key === 'ArrowLeft') camera.position.x -= moveSpeed;
+      else if (e.key === 'ArrowRight') camera.position.x += moveSpeed;
+
+      camera.lookAt(0, 0, 0);
+    }
+
+    // ================== UI / RENDER ==================
+    function showMessage(text, duration = 2000) {
+      const msg = document.getElementById('message');
+      msg.textContent = text;
+      msg.style.display = 'block';
+      setTimeout(() => { msg.style.display = 'none'; }, duration);
+    }
+
+    function onWindowResize() {
+      const aspect = window.innerWidth / window.innerHeight;
+      const size = 18;
+      camera.left = -size * aspect;
+      camera.right = size * aspect;
+      camera.top = size;
+      camera.bottom = -size;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+
+    // ================== SOLVER-BASED NEW GAME ==================
+    function startNewGame() {
+      resetBoard();
+      resetAllPieces();
+
+      /*
+      const solution = findSolution();
+      if (!solution) {
+        showMessage("Could not generate a valid puzzle. Trying again...", 500);
+        setTimeout(startNewGame, 10);
+        return;
+      }
+      applySolution(solution);
+        */
+
+
+      const placedCount = Math.max(1, totalPieces - currentDifficulty);
+      const allIndices = pieces.map((p, i) => i);
+      for (let i = allIndices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allIndices[i], allIndices[j]] = [allIndices[j], allIndices[i]];
+      }
+      const keepIndices = allIndices.slice(0, placedCount);
+
+      for (let i = 0; i < pieces.length; i++) {
+        if (!keepIndices.includes(i)) {
+          removePieceFromBoard(pieces[i]);
+          resetPiecePosition(pieces[i]);
+        }
+      }
+
+      showMessage(`New puzzle started! Difficulty: ${currentDifficulty}`, 2000);
+    }
+
+    function findSolution() {
+      const matrix = generateExactCoverMatrix();
+      const dlx = new dlxlib.Dlx(); // Initialize DLX solver (assumes dlxlib is included)
+      // dlx.loadMatrix(matrix);
+      const solution = dlx.solve(matrix);
+
+      if (!solution || solution.length === 0) return null;
+
+      return parseSolution(solution, matrix);
+    }
+
+    function generateExactCoverMatrix() {
+      const matrix = [];
+      const piecePlacements = generateAllPlacements();
+
+      piecePlacements.forEach((placement, index) => {
+        const row = new Array(boardCells.length).fill(0);
+        placement.cells.forEach(cell => {
+          const cellIndex = boardCells.findIndex(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s);
+          if (cellIndex !== -1) row[cellIndex] = 1;
+        });
+        matrix.push({ row, placement }); // Store placement with row for later parsing
+      });
+
+      return matrix;
+    }
+
+    function generateAllPlacements() {
+      const placements = [];
+      pieces.forEach(piece => {
+        for (let rot = 0; rot < 6; rot++) {
+          for (let flip = 0; flip < 2; flip++) {
+            const transformedCells = getTransformedCoordinates(piece, rot, flip);
+            boardCells.forEach(targetCell => {
+              const cells = transformedCells.map(cell => {
+                const relQ = cell.q - transformedCells[0].q;
+                const relR = cell.r - transformedCells[0].r;
+                const newQ = targetCell.q + relQ;
+                const newR = targetCell.r + relR;
+                const newS = -newQ - newR;
+                return { q: newQ, r: newR, s: newS };
+              });
+
+              if (cells.every(cell => boardCells.some(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s))) {
+                placements.push({ piece, rot, flip, cells, targetCell });
+              }
+            });
+          }
+        }
+      });
+      return placements;
+    }
+
+    function parseSolution(solution, matrix) {
+      return solution.map(rowIndex => {
+        const { placement } = matrix[rowIndex];
+        return {
+          id: placement.piece.userData.pieceId,
+          rotation: placement.rot,
+          flipped: placement.flip,
+          placedAt: { q: placement.targetCell.q, r: placement.targetCell.r, s: placement.targetCell.s }
+        };
+      });
+    }
+
+    function applySolution(solution) {
+      resetBoard();
+      resetAllPieces();
+
+      solution.forEach(pieceState => {
+        const piece = pieces.find(p => p.userData.pieceId === pieceState.id);
+        if (!piece || !pieceState.placedAt) return;
+
+        piece.userData.rotationState = 0;
+        piece.userData.flipped = false;
+        piece.rotation.y = 0;
+        if (piece.scale.z < 0) piece.scale.z *= -1;
+
+        for (let i = 0; i < pieceState.rotation; i++) {
+          piece.userData.rotationState = (piece.userData.rotationState + 1) % 6;
+          piece.rotation.y += Math.PI / 3;
+        }
+
+        if (pieceState.flipped) {
+          piece.userData.flipped = true;
+          piece.scale.z *= -1;
+        }
+
+        const targetCell = boardCells.find(bc => bc.q === pieceState.placedAt.q && bc.r === pieceState.placedAt.r && bc.s === pieceState.placedAt.s);
+        if (targetCell) {
+          const result = getPotentialCellsForSolver(piece, targetCell);
+          if (result.canPlace) {
+            piece.position.set(targetCell.x, 0, targetCell.z);
+            piece.userData.inPlace = true;
+            piece.userData.placedAt = { q: targetCell.q, r: targetCell.r, s: targetCell.s };
+            result.cells.forEach(cell => {
+              const boardCell = boardCells.find(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s);
+              if (boardCell) {
+                boardCell.occupied = true;
+                boardCell.pieceId = piece.userData.pieceId;
+              }
+            });
+            piecesInPlace++;
+          }
+        }
+      });
+    }
+
+    function getPotentialCellsForSolver(piece, targetCell) {
+      const transformedCells = getTransformedCoordinates(piece);
+      const anchorCell = transformedCells[0];
+      const targetCells = transformedCells.map(cell => {
+        const relQ = cell.q - anchorCell.q;
+        const relR = cell.r - anchorCell.r;
+        const newQ = targetCell.q + relQ;
+        const newR = targetCell.r + relR;
+        const newS = -newQ - newR;
+        return { q: newQ, r: newR, s: newS };
+      });
+
+      const canPlace = targetCells.every(cell =>
+        boardCells.some(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s && !bc.occupied)
+      );
+
+      return { canPlace, cells: targetCells };
+    }
+
+    // ================== RESET & SAVE/LOAD ==================
+    function resetBoard() {
+      boardCells.forEach(bc => {
+        bc.occupied = false;
+        bc.pieceId = null;
+      });
+      piecesInPlace = 0;
+      unhighlightAllCells();
+    }
+
+    function resetAllPieces() {
+      pieces.forEach(piece => {
+        if (piece.userData.inPlace) removePieceFromBoard(piece);
+        const origPos = piece.userData.originalPosition;
+        piece.position.set(origPos.x, origPos.y, origPos.z);
+        piece.rotation.y = 0;
+        piece.userData.rotationState = 0;
+        if (piece.userData.flipped) {
+          piece.scale.z *= -1;
+          piece.userData.flipped = false;
+        }
+      });
+    }
+
+    function resetCurrentGame() {
+      resetBoard();
+      resetAllPieces();
+      showMessage("Game reset!", 1500);
+    }
+
+    function savePuzzle() {
+      // Your existing savePuzzle remains unchanged
+      const saveId = 'puzzle_' + Date.now();
+      const puzzleState = {
+        difficulty: currentDifficulty,
+        pieces: pieces.map(p => ({
+          id: p.userData.pieceId, inPlace: p.userData.inPlace,
+          rotationState: p.userData.rotationState, flipped: p.userData.flipped,
+          placedAt: p.userData.placedAt
+        }))
+      };
+      savedPuzzles[saveId] = { date: new Date().toLocaleString(), state: puzzleState };
+      localStorage.setItem('hexPuzzleSaves', JSON.stringify(savedPuzzles));
+      showMessage("Puzzle saved!", 1500);
+    }
+
+    function loadSavedPuzzle() {
+      // Your existing loadSavedPuzzle remains unchanged
+      const keys = Object.keys(savedPuzzles);
+      if (!keys.length) {
+        showMessage("No saved puzzles found!", 2000);
+        return;
+      }
+      const latest = keys[keys.length - 1];
+      const puzzleState = savedPuzzles[latest].state;
+
+      resetBoard();
+      resetAllPieces();
+
+      currentDifficulty = puzzleState.difficulty;
+      document.getElementById('difficultySlider').value = currentDifficulty;
+      document.getElementById('difficultyValue').textContent = currentDifficulty;
+
+      puzzleState.pieces.forEach(pieceState => {
+        const piece = pieces.find(p => p.userData.pieceId === pieceState.id);
+        if (!piece) return;
+
+        piece.userData.rotationState = 0;
+        piece.userData.flipped = false;
+        piece.rotation.y = 0;
+        if (piece.scale.z < 0) piece.scale.z *= -1;
+
+        for (let i = 0; i < pieceState.rotationState; i++) {
+          piece.userData.rotationState = (piece.userData.rotationState + 1) % 6;
+          piece.rotation.y += Math.PI / 3;
+        }
+
+        if (pieceState.flipped) {
+          piece.userData.flipped = true;
+          piece.scale.z *= -1;
+        }
+
+        if (pieceState.inPlace && pieceState.placedAt) {
+          const targetCell = boardCells.find(bc => bc.q === pieceState.placedAt.q && bc.r === pieceState.placedAt.r && bc.s === pieceState.placedAt.s);
+          if (targetCell) {
+            const result = getPotentialCellsForSolver(piece, targetCell);
+            if (result.canPlace) {
+              piece.position.set(targetCell.x, 0, targetCell.z);
+              piece.userData.inPlace = true;
+              piece.userData.placedAt = { q: targetCell.q, r: targetCell.r, s: targetCell.s };
+              result.cells.forEach(cell => {
+                const boardCell = boardCells.find(bc => bc.q === cell.q && bc.r === cell.r && bc.s === cell.s);
+                if (boardCell) {
+                  boardCell.occupied = true;
+                  boardCell.pieceId = piece.userData.pieceId;
+                }
+              });
+              piecesInPlace++;
+            }
+          }
+        }
+      });
+
+      showMessage("Saved puzzle loaded!", 2000);
+    }
+
+    function loadSavedPuzzlesFromStorage() {
+      const data = localStorage.getItem('hexPuzzleSaves');
+      if (data) {
+        try {
+          savedPuzzles = JSON.parse(data);
+        } catch (e) {
+          console.error("Error loading saves:", e);
+          savedPuzzles = {};
+        }
+      }
+    }
+
+    function updateDifficulty() {
+      currentDifficulty = parseInt(document.getElementById('difficultySlider').value);
+      document.getElementById('difficultyValue').textContent = currentDifficulty;
+    }
+
+    function showHelp() { document.getElementById('helpModal').style.display = 'block'; }
+    function hideHelp() { document.getElementById('helpModal').style.display = 'none'; }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
